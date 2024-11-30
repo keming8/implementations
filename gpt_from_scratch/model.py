@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+"""
+Reference:
+https://github.com/karpathy/nanoGPT
+"""
+
 # Hyperparams
 batch_size = 4
 block_size = 8
