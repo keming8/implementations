@@ -1,13 +1,18 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
 import numpy as np
+import torchvision
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from huggingface_hub import login
 from datasets import load_dataset
-from PIL import Image
+from basic_gan_model import Generator, Discriminator, SimpleGeneratorBlock, SimpleDiscriminatorBlock
+# from deep_convolutional_gan_model import Generator, Discriminator, ConvDiscriminatorBlock, ConvGeneratorBlock
+
+# Set manual seed
+manual_seed = 1000
+torch.manual_seed(manual_seed)
+torch.use_deterministic_algorithms(True)
 
 # Define hyperparameters
 batch_size = 32
@@ -19,8 +24,7 @@ learning_rate = 2e-4
 # Load the dataset. Use MNIST for this
 
 ds = load_dataset("ylecun/mnist")
-# image = ds['train'][10]['image']
-# print(type(image))
+
 
 transform = transforms.Compose([
     transforms.Grayscale(num_output_channels=1), 
@@ -47,125 +51,93 @@ class TransformDataset:
 train_dataset = TransformDataset(ds['train'], transform)
 test_dataset = TransformDataset(ds['test'], transform)
 
+def check_transformation(ds, ind=10):
+    image, label = ds[ind]
+
+    image = image * 0.5 + 0.5 
+    image = image.squeeze(0) 
+
+    plt.imshow(image.numpy(), cmap='gray')
+    plt.title(f"Label: {label}")
+    plt.axis('off')
+    plt.show()
+
 train_loader = DataLoader(train_dataset, batch_size=batch_size)
 test_loader = DataLoader(test_dataset, batch_size=batch_size)
-
-class SimpleGeneratorBlock(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(input_dim, output_dim),
-            nn.ReLU()
-        )
-        
-    def forward(self, x):
-        x = self.block(x)
-        return x
-
-class SimpleDiscriminatorBlock(nn.Module):
-    
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(input_dim, output_dim),
-            nn.ReLU()
-        )
-        
-    def forward(self, x):
-        x = self.block(x)
-        return x
-
-class Generator(nn.Module):
-
-    def __init__(self, input_dim, output_dim, block):
-        super().__init__()
-        self.generator_block = block
-        self.model = nn.Sequential(
-            self.generator_block(input_dim, 128),
-            self.generator_block(128, 256),
-            self.generator_block(256, output_dim),
-            nn.Tanh()
-        )
-    
-    def forward(self, x):
-        x = self.model(x)
-        x = x.view(x.size(0), 1, 28, 28)
-        return x
-
-
-# Discriminator takes image as input, classifies whether it's from the dataset or not
-class Discriminator(nn.Module):
-
-    def __init__(self, input_dim, output_dim, block):
-        super().__init__()
-        self.discriminator_block = block
-        self.model = nn.Sequential(
-            self.discriminator_block(input_dim, 512),
-            self.discriminator_block(512, 256),
-            self.discriminator_block(256, output_dim),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
-        x = self.model(x)
-
-        return x
-
-class GAN():
-    
-    def __init__(self, generator, discriminator):
-        super().__init__()
-        self.generator = generator
-        self.discriminator = discriminator
-        self.g_optimizer = torch.optim.AdamW(self.generator.parameters(), lr=learning_rate)
-        self.d_optimizer = torch.optim.AdamW(self.discriminator.parameters(), lr=learning_rate)
-
-
 
 # Create blocks
 
 generator = Generator(100, 28*28, SimpleGeneratorBlock)
 discriminator = Discriminator(28*28, 1, SimpleDiscriminatorBlock)
-model = GAN(generator, discriminator)
+# generator = Generator(100, 28*28, ConvGeneratorBlock)
+# discriminator = Discriminator(28*28, 1, ConvDiscriminatorBlock)
+
 
 criterion = nn.BCELoss()
+g_optimizer = torch.optim.Adam(generator.parameters(), lr=1e-3)
+d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
 
+# Training to be split into two parts
+# Part 1 updates the discriminator
+# Part 2 updates the generator
+# https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
+
+
+generator.train()
+discriminator.train()
 for epoch in range(epochs):
     for i, (image, _) in enumerate(train_loader):
         real_images = image.to(device)
 
         # Create labels
         real_labels = torch.ones((batch_size, 1)).to(device)
+        # real_labels = torch.ones((len(image), 1)).to(device)
 
         # Create generated samples
-        fake_images = model.generator(torch.randn((batch_size, input_dims)).to(device))
+        fake_images = generator(torch.randn((batch_size, input_dims)).to(device))
         fake_labels = torch.zeros((batch_size, 1)).to(device)
+        # fake_labels = torch.zeros((len(image), 1)).to(device)
+
+
+        real_output = discriminator(real_images)
+        fake_output = discriminator(fake_images)
 
         # Put all samples together
-        all_images = torch.cat((real_images, fake_images))
-        all_labels = torch.cat((real_labels, fake_labels))
+        # all_images = torch.cat((real_images, fake_images))
+        # all_labels = torch.cat((real_labels, fake_labels))
         
         # Train discriminator
-        model.d_optimizer.zero_grad()
-        d_output = model.discriminator(all_images)
-        d_loss = criterion(d_output, all_labels)
+        d_optimizer.zero_grad()
+
+        d_real_loss = criterion(real_output, real_labels)
+        d_fake_loss = criterion(fake_output, fake_labels)
+        d_loss = d_real_loss + d_fake_loss
         d_loss.backward()
-        model.d_optimizer.step()
+        d_optimizer.step()
 
-        # Data to train generator
-        latent_fake_images = torch.randn((batch_size, input_dims)).to(device)
+        for _ in range(5):
+            # Data to train generator
+            latent_fake_images = torch.randn((batch_size, input_dims)).to(device)
+            # latent_fake_images = torch.randn((len(image), input_dims)).to(device)
 
-        # Train generator
-        model.g_optimizer.zero_grad()
-        fake_images = model.generator(latent_fake_images)
-        fake_output = model.discriminator(fake_images)
+            # Train generator
+            g_optimizer.zero_grad()
+            fake_images = generator(latent_fake_images)
+            fake_output = discriminator(fake_images)
 
-        g_loss = criterion(fake_output, real_labels)
-        g_loss.backward()
-        model.g_optimizer.step()
-
+            g_loss = criterion(fake_output, real_labels)
+            g_loss.backward()
+            g_optimizer.step()
+        
 
     print(f"Epoch [{epoch+1}/{epochs}], "
         f"D Loss: {d_loss.item():.4f}, "
         f"G Loss: {g_loss.item():.4f}")
+
+    # with torch.no_grad():
+    #     test_noise = torch.randn(16, input_dims).to(device)
+    #     generated_images = generator(test_noise)
+    #     grid = torchvision.utils.make_grid(generated_images, nrow=4, normalize=True)
+    #     plt.imshow(np.transpose(grid.cpu().numpy(), (1, 2, 0)))
+    #     plt.title(f"Epoch {epoch+1}")
+    #     plt.show()
